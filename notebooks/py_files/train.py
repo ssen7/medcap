@@ -80,7 +80,7 @@ def train_global_cluster_model(encoder, dataloader, device, ncentroids=8):
     return kmeans
 
 
-def cluster_all_patches(encoder, kmeans, dataloader, device, ncentroids=8):
+def cluster_all_patches(encoder, kmeans, dataloader, device, df, save_path='../data/', ncentroids=8):
     
     print("Clustering all patches...")
     
@@ -94,7 +94,7 @@ def cluster_all_patches(encoder, kmeans, dataloader, device, ncentroids=8):
         in_batch_size = img.shape[0]
         
         with torch.no_grad():
-            reps = image_encoder(img)
+            reps = encoder(img)
         rep_list.append(reps.detach().detach().cpu().numpy().reshape(in_batch_size, -1))
         path_list += path
         
@@ -108,8 +108,13 @@ def cluster_all_patches(encoder, kmeans, dataloader, device, ncentroids=8):
     
     D, I = kmeans.index.search(X, 1)
     
-    df = pd.DataFrame(path_list, columns=['patch_paths'])
-    df['cluster_assignment'] = I
+    df_c = pd.DataFrame(path_list, columns=['patch_paths'])
+    df_c['cluster_assignment'] = I
+
+
+    df = df.merge(df_c, on='patch_paths')
+
+    df.to_csv(save_path+'df_cluster.csv', index=False)
     
     print("\nFinished clustering all patches...")
     
@@ -119,5 +124,3 @@ def cluster_all_patches(encoder, kmeans, dataloader, device, ncentroids=8):
     torch.cuda.empty_cache()
     
     return df
-
-
