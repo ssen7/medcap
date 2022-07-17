@@ -2,7 +2,8 @@
 
 import torch
 import torch.nn as nn
-from utils import cosine_similarity
+from torch.autograd import Variable
+from .utils import cosine_similarity
 
 def global_loss(cnn_code, rnn_code, eps=1e-8, temp3=10.0):
 

@@ -34,8 +34,8 @@ import gc
 import torch.optim as optim
 import time
 
-from loss import global_loss, local_loss
-from utils import cosine_similarity, check_cuda
+from .loss import global_loss, local_loss
+from .utils import cosine_similarity, check_cuda
 
 
 def train_global_cluster_model(encoder, dataloader, device, ncentroids=8):
@@ -131,8 +131,8 @@ def cluster_all_patches(encoder, kmeans, dataloader, device, df, save_path='../d
     return df
 
 def get_bert_params(text_encoder):
-    freeze_modules = [text_encoder.model.embeddings, *text_encoder.model.encoder.layer[:-4]]
-    non_freeze_modules = [*text_encoder.model.encoder.layer[:-4]]
+    freeze_modules = [text_encoder.module.model.embeddings, *text_encoder.module.model.encoder.layer[:-4]]
+    non_freeze_modules = [*text_encoder.module.model.encoder.layer[-4:]]
     
     param_list = []
     for module in freeze_modules:
@@ -147,7 +147,10 @@ def get_bert_params(text_encoder):
     return param_list
 
 
-def start_pretraining(img_encoder, text_encoder, train_loader, val_loader, device, pid_batch_size=8, num_cluster=8, epochs=50):
+def start_pretraining_warmup(img_encoder, text_encoder, train_loader, val_loader, device, pid_batch_size=8, num_cluster=8, epochs=50):
+
+    if epochs > 1:
+        print("\nWarming Up")
     
     params = list(img_encoder.parameters()) + get_bert_params(text_encoder)
     optimizer = optim.Adadelta([param for param in params \
@@ -292,7 +295,7 @@ def evaluate(img_encoder, text_encoder, val_dataloader, device, pid_batch_size=8
 
         gloss0, gloss1 = global_loss(cnn_code, rnn_code)
         loss0, loss1, att_maps=local_loss(img_features, words_embs, cap_lens)
-        loss = loss0 + loss1 + 0.1*gloss0 + 0.1*gloss1
+        loss = loss0 + loss1 + gloss0 + gloss1
 
         val_loss.append(loss.item())
         
