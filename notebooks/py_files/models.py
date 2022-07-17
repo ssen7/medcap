@@ -21,12 +21,13 @@ from tqdm.notebook import trange, tqdm
 import random
 
 from transformers import BertTokenizer, AutoTokenizer, AutoModel, BertModel
+from .utils import check_cuda
 
 import matplotlib.pyplot as plt
 
 class BertEncoder(nn.Module):
     def __init__(self, bert_type="emilyalsentzer/Bio_ClinicalBERT", freeze_bert=False,\
-                 agg_tokens=True, n_bert_layers=4, agg_method='sum', embedding_dim=768):
+                 agg_tokens=True, n_bert_layers=4, agg_method='sum', embedding_dim=768, device=None):
         super(BertEncoder, self).__init__()
     
         self.bert_type = bert_type
@@ -34,7 +35,8 @@ class BertEncoder(nn.Module):
         self.agg_tokens = agg_tokens
         self.n_bert_layers = n_bert_layers
         self.agg_method = agg_method
-        self.embedding_dim = embedding_dim        
+        self.embedding_dim = embedding_dim
+        self.device = device
         
         self.model = BertModel.from_pretrained(self.bert_type, output_hidden_states=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.bert_type)
@@ -148,11 +150,8 @@ class BertEncoder(nn.Module):
         word_embeddings = word_embeddings.view(batch_dim, num_words, self.embedding_dim)
         word_embeddings = word_embeddings.permute(0, 2, 1)
 
-        
-        return word_embeddings, sent_embeddings, sents
-    
-    
-
+        cap_lens = torch.tensor(([len([w for w in sent if not w.startswith("[")]) + 1 for sent in sents]), device=self.device)
+        return word_embeddings, sent_embeddings, cap_lens
     
 class ImageEncoder(nn.Module):
     def __init__(self, base_model):
