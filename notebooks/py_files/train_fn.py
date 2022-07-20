@@ -25,8 +25,8 @@ from transformers import BertTokenizer, AutoTokenizer, AutoModel, BertModel
 
 import matplotlib.pyplot as plt
 
-from py_files.models import BertEncoder, ResnetPreTrained, ImageEncoder
-from py_files.datasets import WSIBatchedDataset, GetRepsDataset
+from .models import BertEncoder, ResnetPreTrained, ImageEncoder
+from .datasets import WSIBatchedDataset, GetRepsDataset
 
 import faiss
 
@@ -36,6 +36,9 @@ import time
 
 from .loss import global_loss, local_loss
 from .utils import cosine_similarity, check_cuda
+import wandb
+
+wandb.init(project="contrastive_training_script")
 
 
 def train_global_cluster_model(encoder, dataloader, device, ncentroids=8):
@@ -49,7 +52,7 @@ def train_global_cluster_model(encoder, dataloader, device, ncentroids=8):
     
     for img, path in tqdm(dataloader):
 
-        img.to(device)    
+        img = img.to(device)    
 
         in_batch_size = img.shape[0]
         
@@ -87,14 +90,14 @@ def train_global_cluster_model(encoder, dataloader, device, ncentroids=8):
 
 def cluster_all_patches(encoder, kmeans, dataloader, device, df, save_path='../data/', ncentroids=8):
     
-    print("Clustering all patches...")
+    print("\nClustering all patches...")
     
     encoder.eval()
     
     path_list, rep_list = [], []
     
     for img, path in tqdm(dataloader):
-        img.to(device)
+        img = img.to(device)
         
         in_batch_size = img.shape[0]
         
@@ -149,9 +152,6 @@ def get_bert_params(text_encoder):
 
 def start_pretraining_warmup(img_encoder, text_encoder, train_loader, val_loader, device, pid_batch_size=8, num_cluster=8, epochs=50):
 
-    if epochs > 1:
-        print("\nWarming Up")
-    
     params = list(img_encoder.parameters()) + get_bert_params(text_encoder)
     optimizer = optim.Adadelta([param for param in params \
                                 if param.requires_grad == True],lr=1e-3,rho=0.95)
@@ -159,15 +159,18 @@ def start_pretraining_warmup(img_encoder, text_encoder, train_loader, val_loader
     print(f"{'Epoch':^7} | {'Train Loss':^12} | {'Val Loss':^10} | {'Elapsed':^9}")
     print("-"*60)
     
-    best_val_loss=10
+    best_val_loss=100
     best_img_model=0
     best_text_model=0
     epochs_since_improvement = 0
+
+    wandb.watch(img_encoder, log_freq=50)
+    wandb.watch(text_encoder, log_freq=50)
     
     for epoch_i in range(epochs):
         
         
-        if epochs_since_improvement == 20:
+        if epochs_since_improvement == 50:
             break
 
         if epochs_since_improvement > 0 and epochs_since_improvement % 8 == 0:
@@ -217,7 +220,7 @@ def start_pretraining_warmup(img_encoder, text_encoder, train_loader, val_loader
 
             gloss0, gloss1 = global_loss(cnn_code, rnn_code)
             loss0, loss1, att_maps=local_loss(img_features, words_embs, cap_lens)
-            loss = loss0 + loss1 + 0.1*gloss0 + 0.1*gloss1
+            loss = loss0 + loss1 + gloss0 + gloss1
             
             total_loss += loss.item()
 
@@ -251,6 +254,7 @@ def start_pretraining_warmup(img_encoder, text_encoder, train_loader, val_loader
             # Print performance over the entire training data
             time_elapsed = time.time() - t0_epoch
             print(f"{epoch_i + 1:^7} | {avg_train_loss:^12.6f} | {val_loss:^10.6f} | {time_elapsed:^9.2f}")
+            wandb.log({"avg_train_loss":avg_train_loss, "val_loss":val_loss})
 
     
     return best_img_model, best_text_model
@@ -302,4 +306,125 @@ def evaluate(img_encoder, text_encoder, val_dataloader, device, pid_batch_size=8
     val_loss = np.mean(val_loss)
     
     return val_loss
+
+
+def start_pretraining_NC(img_encoder, text_encoder, train_loader, val_loader, device, model_save_path, epochs=50, img_per_pid=8):
+
+    params = list(img_encoder.parameters()) + get_bert_params(text_encoder)
+    optimizer = torch.optim.Adam([param for param in params if param.requires_grad == True], lr=1e-3, weight_decay=1e-5)
+
+
+    print("Start training...\n")
+    print(f"{'Steps':^7} | {'Train Loss':^12} | {'Val Loss':^10} | {'Elapsed':^9}")
+    print("-"*50)
+    
+    best_val_loss=100
+    best_img_model=0
+    best_text_model=0
+    epochs_since_improvement = 0
+
+    wandb.watch(img_encoder, log_freq=50)
+    wandb.watch(text_encoder, log_freq=50)
+
+    step_count=0
+    evaluation_count=0
+
+    for epoch_i in range(epochs):
         
+        
+        if evaluation_count == 20:
+            break
+
+        if epochs_since_improvement > 0 and epochs_since_improvement % 5 == 0:
+            print("\nDECAYING learning rate.")
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = param_group['lr'] * 0.5
+            print("The new learning rate is %f\n" % (optimizer.param_groups[0]['lr'],))
+    
+        img_encoder.train()
+        text_encoder.train()
+        
+        # Tracking time and loss
+        t0_epoch = time.time()
+        total_loss = 0
+        
+        for i, (img, text, attention, token_typ, img_seps, pids) in enumerate(train_loader):
+
+            step_count+=1
+
+            img_seps = [0]+[i.numpy()[0] for i in img_seps]
+            img_seps = [[img_seps[i],img_seps[i+1]] for i in range(len(img_seps)-1)]
+
+            img, text = img.squeeze(0).to(device),text.squeeze(0).to(device)
+            attention, token_typ = attention.squeeze(0).to(device), token_typ.squeeze(0).to(device)
+
+            text_outputs = text_encoder(text, attention, token_typ)
+            img_outputs = img_encoder(img)
+
+            # clean up
+            del img, text, attention, token_typ
+            gc.collect()
+
+            cap_lens = text_outputs[2]
+            cap_lens = [cap_lens[i].item() for i in np.arange(0, len(cap_lens), img_per_pid)]
+
+            pid_word_embeddings = [text_outputs[0][x:y] for x, y in img_seps]
+            pid_sent_embeddings = [text_outputs[1][x:y] for x, y in img_seps]
+            pid_img_embeddings = [img_outputs[x:y] for x, y in img_seps]
+
+            cnn_code = torch.stack([x.mean(dim=0) for x in pid_img_embeddings])
+            rnn_code = torch.stack([x[0] for x in pid_sent_embeddings])
+
+            img_features = [x.unsqueeze(2).unsqueeze(2) for x in pid_img_embeddings]
+            img_features = [x.permute(2,1,0,3) for x in img_features]
+            img_features = torch.stack(img_features, dim=0).squeeze(1)
+
+            words_embs = [x[0] for x in pid_word_embeddings]
+            words_embs = torch.stack(words_embs)
+
+            gloss0, gloss1 = global_loss(cnn_code, rnn_code)
+            loss0, loss1, att_maps=local_loss(img_features, words_embs, cap_lens)
+            loss = loss0 + loss1 + gloss0 + gloss1
+            
+            total_loss += loss.item()
+
+            loss.backward()
+            optimizer.step()
+
+        # Calculate the average loss over the entire training data
+        avg_train_loss = total_loss / len(train_loader)
+        val_loss = 0
+        
+        # =======================================
+        #               Evaluation
+        # =======================================
+        if (val_loader is not None) :
+
+            evaluation_count+=1
+            
+            val_loss = evaluate(img_encoder, text_encoder, val_loader, device, test_dataloader=None)
+            
+            is_best = val_loss < best_val_loss
+            best_val_loss = min(val_loss, best_val_loss)
+            
+            if is_best:
+                best_img_model = img_encoder
+                best_text_model = text_encoder
+            
+            if not is_best:
+                epochs_since_improvement += 1
+            else:
+                epochs_since_improvement = 0
+            
+            # Print performance over the entire training data
+            time_elapsed = time.time() - t0_epoch
+            print(f"{step_count + 1:^7} | {avg_train_loss:^12.6f} | {val_loss:^10.6f} | {time_elapsed:^9.2f}")
+            wandb.log({"avg_train_loss":avg_train_loss, "val_loss":val_loss})
+
+        
+        if epoch_i//50==0:
+            torch.save(best_img_model.module.state_dict(), os.path.join(model_save_path,f'best_img_model_iter_{epoch_i}.pth'))
+            torch.save(best_text_model.module.state_dict(), os.path.join(model_save_path,f'best_text_model_iter_{epoch_i}.pth'))
+
+    
+    return best_img_model, best_text_model
