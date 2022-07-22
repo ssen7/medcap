@@ -188,6 +188,8 @@ def start_pretraining_warmup(img_encoder, text_encoder, train_loader, val_loader
         
         for i, (img, text, attention, token_typ, img_seps, pids) in enumerate(train_loader):
 
+            optimizer.zero_grad()
+
             img_seps = [0]+[i.numpy()[0] for i in img_seps]
             img_seps = [[img_seps[i],img_seps[i+1]] for i in range(len(img_seps)-1)]
 
@@ -331,8 +333,7 @@ def start_pretraining_NC(img_encoder, text_encoder, train_loader, val_loader, de
 
     for epoch_i in range(epochs):
         
-        
-        if evaluation_count == 20:
+        if epochs_since_improvement == 30:
             break
 
         if epochs_since_improvement > 0 and epochs_since_improvement % 5 == 0:
@@ -349,6 +350,8 @@ def start_pretraining_NC(img_encoder, text_encoder, train_loader, val_loader, de
         total_loss = 0
         
         for i, (img, text, attention, token_typ, img_seps, pids) in enumerate(train_loader):
+
+            optimizer.zero_grad()
 
             step_count+=1
 
